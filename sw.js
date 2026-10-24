@@ -1,7 +1,7 @@
 /* Service worker: cache-first app shell so the app works offline.
    Only the developer bumps VERSION, whenever index.html / app.js / core.js / app.css / icons change
    (and the matching MONEY_VERSION in index.html). User data lives in localStorage, never in this cache. */
-var VERSION = "v1";
+var VERSION = "v2";
 var CACHE = "money-" + VERSION;
 var SHELL = ["./", "index.html", "app.js", "core.js", "app.css", "manifest.webmanifest",
   "apple-touch-icon.png", "favicon.png", "icons/icon-180.png", "icons/icon-192.png", "icons/icon-512.png", "icons/maskable-512.png"];

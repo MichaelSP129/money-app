@@ -1,5 +1,5 @@
 :root {
-  --bg: #F6F7F7; --card: #FFFFFF; --ink: #14201F; --muted: #5B6866; --line: #DCE2E1;
+  --bg: #F6F7F7; --card: #FFFFFF; --ink: #14201F; --muted: #56625F; /* 4.8:1 on --line for .chip.muted (#7) */ --line: #DCE2E1;
   --brand: #0F766E; --brand-ink: #FFFFFF; --brand-soft: #E6F2F1;
   --good: #15803D; --warn: #B45309; --bad: #B91C1C; --warn-bg: #FEF3C7; --bad-bg: #FEE2E2; --good-bg: #DCFCE7;
   --r: 12px; --tab: 60px;
@@ -107,3 +107,7 @@ input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible
 .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--tab) + 14px + env(safe-area-inset-bottom)); max-width: calc(100% - 32px); background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 10px; z-index: 20; font-size: .95rem; }
 .toast[hidden] { display: none; }
 @media (prefers-reduced-motion: no-preference) { .meter i, .hb i { transition: width .25s ease; } }
+.recovery { border: 2px solid var(--bad, #b42318); margin-bottom: 16px; }
+.recovery h2 { margin-top: 0; }
+.signed { display: flex; gap: 8px; align-items: flex-end; }
+.signed .btn { min-width: 44px; min-height: 44px; margin: 8px 0; font-size: 1.1rem; }
