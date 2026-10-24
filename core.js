@@ -113,14 +113,15 @@
   // 2: "Money sent home" moved out of Transfers into "Family & remittances"; settings.groupTypes (#2).
   // 3: negative amounts are refunds against their category; "Refunds and paybacks" renamed "Paybacks" (#3).
   // 4: calculator assumptions are inputs (#5); older saved inputs keep the old fixed 6% / 7%.
-  var FORMAT = 4, SUPPORTED_FORMATS = [1, 2, 3, 4];
+  // 5: per-category `debt` flag (#30); older data gets it from the old "name starts with Debt" rule.
+  var FORMAT = 5, SUPPORTED_FORMATS = [1, 2, 3, 4, 5];
   var _id = 0;
   function uid(p) { _id += 1; return (p || "x") + Date.now().toString(36) + _id.toString(36) + Math.floor(Math.random() * 1296).toString(36); }
   function defaultState() {
     return {
       app: "money", format: FORMAT,
       settings: { currency: "QAR", startDay: "", groupTypes: dict() },
-      categories: DEFAULT_CATEGORIES.map(function (c, i) { return { id: "c" + (i + 1), group: c[0], name: c[1], budget: "" }; }),
+      categories: DEFAULT_CATEGORIES.map(function (c, i) { return { id: "c" + (i + 1), group: c[0], name: c[1], budget: "", debt: c[1] === "Debt repayment" }; }),
       transactions: [],
       accounts: [],
       goals: DEFAULT_GOALS.map(function (g, i) { return { id: "g" + (i + 1), name: g, current: "", target: "", monthly: "" }; }),
@@ -148,16 +149,21 @@
     return defaultGroupType(g);
   }
   function groupMap(state) { var m = dict(); state.categories.forEach(function (c) { m[c.name] = c.group; }); return m; }
+  /* Debt repayment is a per-category flag (#30), set on the Budget tab; renaming a category doesn't change it.
+     defaultDebt() is only the starting value for a new category (and the format 4 -> 5 migration). A transaction
+     whose category no longer exists has no flag, so it keeps the old name rule; that keeps older totals unchanged. */
+  function defaultDebt(name) { return /^debt/i.test(String(name)); }
+  function debtMap(state) { var m = dict(); state.categories.forEach(function (c) { m[c.name] = c.debt === true; }); return m; }
   function txIn(state, k) {
     var sd = state.settings.startDay;
     return state.transactions.filter(function (t) { return moneyMonth(t.date, sd) === k; });
   }
   function totals(state, k) {
-    var gm = groupMap(state), inc = 0, freedom = 0, spent = 0, debt = 0, other = 0, moved = 0;
+    var gm = groupMap(state), dm = debtMap(state), inc = 0, freedom = 0, spent = 0, debt = 0, other = 0, moved = 0;
     txIn(state, k).forEach(function (t) {
       var g = gm[t.category] || "Other", a = num(t.amount), ty = groupType(state, g);
       if (ty === "income") inc += a;
-      else if (ty === "saving") { freedom += a; if (/^debt/i.test(t.category)) debt += a; }
+      else if (ty === "saving") { freedom += a; if (t.category in dm ? dm[t.category] : defaultDebt(t.category)) debt += a; }
       else if (ty === "outflow") other += a;
       else if (ty === "transfer") moved += a;
       else spent += a;
@@ -214,11 +220,18 @@
     accounts.forEach(function (a) { if (a.type === "Debt") debts += Math.abs(num(a.balance)); else assets += num(a.balance); });
     return { assets: assets, debts: debts, net: assets - debts };
   }
+  /* Months left = still to go / monthly. A positive monthly amount so small that the goal would take more than
+     MAX_GOAL_MONTHS (100 years), or overflow to Infinity, is "not reachable at this rate": monthsLeft is null and
+     `unreachable` is true, so nothing shows a nonsense or infinite figure (#29). A zero or blank monthly is just null. */
+  var MAX_GOAL_MONTHS = 1200;
   function goalStats(g) {
     var target = num(g.target), cur = num(g.current), m = num(g.monthly), togo = Math.max(0, target - cur);
+    if (!isFinite(togo)) togo = Number.MAX_VALUE; // e.g. target 1e308 with current -1e308
+    var months = target <= 0 ? null : togo <= 0 ? 0 : m > 0 ? togo / m : null;
+    var unreachable = months !== null && months > 0 && !(months <= MAX_GOAL_MONTHS);
     return {
       target: target, togo: togo, progress: target > 0 ? Math.min(1, Math.max(0, cur / target)) : 0, hasTarget: target > 0,
-      monthsLeft: target <= 0 ? null : togo <= 0 ? 0 : m > 0 ? togo / m : null
+      monthsLeft: unreachable ? null : months, unreachable: unreachable
     };
   }
 
@@ -408,7 +421,7 @@
       app: "money", format: FORMAT,
       settings: { currency: "QAR", groupTypes: dict(), startDay: o.settings && has(o.settings.startDay) && num(o.settings.startDay) >= 1 && num(o.settings.startDay) <= 31 ? String(Math.floor(num(o.settings.startDay))) : "" },
       categories: Array.isArray(o.categories) ? o.categories.filter(function (c) { return keep("categories")(c && typeof c === "object" && str(c.name).trim()); }).map(function (c) {
-        return { id: fresh(c.id, "c"), group: str(c.group).trim() || "Other", name: str(c.name).trim(), budget: amt(c.budget) };
+        return { id: fresh(c.id, "c"), group: str(c.group).trim() || "Other", name: str(c.name).trim(), budget: amt(c.budget), debt: c.debt === true };
       }) : d.categories,
       transactions: arr(o.transactions).map(function (t) {
         var date = t && parseDate(t.date);
@@ -465,6 +478,9 @@
       if (filled(["tgoal", "tcur", "trate", "tyears"]) && !has(s.calc.tinf)) s.calc.tinf = "6";
       if (filled(["fage", "fsal"]) && !has(s.calc.fgrow)) s.calc.fgrow = "7";
     }
+    // Format 4 -> 5 (#30): debt repayment was "category name starts with Debt"; it is now a per-category flag.
+    // Older data gets the flag from that rule, so its totals don't change; after that, renaming keeps the flag.
+    if (fmt < 5) s.categories.forEach(function (c) { c.debt = defaultDebt(c.name); });
     if (report) report.dropped = dropped;
     return s;
   }
@@ -489,12 +505,20 @@
     };
   }
   /* Read what this app saved on the device (#10). Never throws. `problem` is null when the saved data is
-     healthy, otherwise a short reason; the caller must then keep the raw text safe before saving anything. */
+     healthy, otherwise a short reason; the caller must then keep the raw text safe before saving anything.
+     `newer` is set (to the saved format) when a newer version of the app saved it: open read-only and never save (#28). */
   function readStored(raw) {
     if (raw === null || raw === undefined) return { state: defaultState(), problem: null };
     var o;
     try { o = JSON.parse(raw); } catch (e) { return { state: defaultState(), problem: "it isn't readable (damaged JSON)" }; }
     if (!o || typeof o !== "object" || Array.isArray(o) || (o.app !== undefined && o.app !== "money")) return { state: defaultState(), problem: "it isn't Money app data" };
+    // #28: data saved by a newer version (an old cached app is running). Show what can be read, but the caller
+    // must not save over it: re-saving it in this version's older shape would silently drop fields it doesn't know.
+    if (typeof o.format === "number" && o.format > FORMAT) {
+      var shown = defaultState();
+      try { var n = normalize(o); selfCheck(n); shown = n; } catch (e) { /* show a blank app; the raw data stays untouched */ }
+      return { state: shown, problem: "it was saved by a newer version of Money (format " + o.format + ")", newer: o.format };
+    }
     var report = {}, st;
     try { st = normalize(o, report); } catch (e) { return { state: defaultState(), problem: "it couldn't be read" }; }
     try { selfCheck(st); } catch (e) { return { state: defaultState(), problem: "it couldn't be shown safely" }; } // #12
@@ -513,7 +537,9 @@
       if (v && typeof v === "object") Object.keys(v).forEach(function (k) { bad(v[k], path + "." + k); });
     };
     monthKeys(state, today || isoOf(new Date())).forEach(function (k) { bad(totals(state, k), "totals"); bad(budgetStats(state, k), "budget"); });
-    bad(netWorth(state.accounts), "netWorth"); txToCSV(state); toBackup(state);
+    bad(netWorth(state.accounts), "netWorth");
+    state.goals.forEach(function (g, i) { bad(goalStats(g), "goals." + i); }); // #29
+    txToCSV(state); toBackup(state);
     return true;
   }
   function toBackup(state, now) {
@@ -529,10 +555,11 @@
     iso: iso, isoOf: isoOf, parseDate: parseDate, daysIn: daysIn, startDay: startDay, startOn: startOn, keyOf: keyOf, shiftKey: shiftKey,
     moneyMonth: moneyMonth, monthRange: monthRange, monthLabel: monthLabel, nice: nice,
     uid: uid, defaultState: defaultState, isIncome: isIncome, isFreedom: isFreedom, groupMap: groupMap, groupType: groupType, GROUP_TYPES: GROUP_TYPES,
-    txIn: txIn, totals: totals, status: status, budgetStats: budgetStats, monthKeys: monthKeys, netWorth: netWorth, goalStats: goalStats,
+    txIn: txIn, totals: totals, status: status, budgetStats: budgetStats, monthKeys: monthKeys, netWorth: netWorth, goalStats: goalStats, MAX_GOAL_MONTHS: MAX_GOAL_MONTHS,
     calc: calc, matchCat: matchCat, parseQuick: parseQuick,
     parseCSV: parseCSV, txToCSV: txToCSV, csvToTx: csvToTx, normalize: normalize, toBackup: toBackup, fromBackup: fromBackup, readBackup: readBackup, checkBackup: checkBackup, FORMAT: FORMAT, readStored: readStored, selfCheck: selfCheck
   };
+  api.defaultDebt = defaultDebt; // #30
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.Money = api;
 })(typeof self !== "undefined" ? self : this);

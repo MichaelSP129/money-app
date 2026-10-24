@@ -4,7 +4,7 @@
   var M = window.Money;
   var KEY = "money-app-v1", UNDO_KEY = KEY + "-before-import", REC_KEY = KEY + "-recovery";
   var TABS = [["home", "Home"], ["budget", "Budget"], ["spend", "Spending"], ["worth", "Net worth"], ["tools", "Tools"]];
-  var S, storageOk = true, readOnly = false, problem = "";
+  var S, storageOk = true, readOnly = false, problem = "", newer = 0; // newer: format of data saved by a newer app version (#28)
   var U = { tab: "home", sel: "", onlyActive: false, editTx: null, form: { qa: "", cat: "", paid: "", date: "" }, msg: "" };
 
   function hasUndo() { try { return !!localStorage.getItem(UNDO_KEY); } catch (e) { return false; } }
@@ -25,13 +25,19 @@
     try { raw = localStorage.getItem(KEY); } catch (e) { raw = null; }
     var r = M.readStored(raw);
     S = r.state;
-    if (r.problem) {
-      problem = r.problem;
-      readOnly = !quarantine(raw);
-    } else if (!readOnly) problem = "";
+    var wasNewer = newer; newer = r.newer || 0;
+    if (newer) { problem = r.problem; readOnly = true; } // #28: never write, so the newer data stays exactly as it is
+    else {
+      if (wasNewer) { readOnly = false; problem = ""; } // the newer data was replaced (e.g. by an updated tab)
+      if (r.problem) {
+        problem = r.problem;
+        readOnly = !quarantine(raw);
+      } else if (!readOnly) problem = "";
+    }
     try { var t = localStorage.getItem(KEY + "-tab"); if (t && TABS.some(function (x) { return x[0] === t; })) U.tab = t; } catch (e) { /* ignore */ }
   }
   function save() {
+    if (newer) { toast(NEWER_MSG + " Nothing is saved until then."); return; }
     if (readOnly) { toast("Saving is paused so your damaged saved data isn't overwritten. Download it first (see the box at the top)."); return; }
     try { localStorage.setItem(KEY, JSON.stringify(S)); storageOk = true; }
     catch (e) { storageOk = false; toast("Couldn't save on this device (storage full or blocked). Export a backup now."); }
@@ -40,7 +46,12 @@
   function wipeOtherKeys() {
     try { for (var i = localStorage.length - 1; i >= 0; i--) { var k = localStorage.key(i); if (k && k !== KEY && k.indexOf(KEY + "-") === 0) localStorage.removeItem(k); } } catch (e) { /* ignore */ }
   }
+  var NEWER_MSG = "This data was saved by a newer version of Money. Reload while online to update.";
+  function rawSaved() { try { return localStorage.getItem(KEY); } catch (e) { return null; } }
   function recoveryBox() {
+    if (newer) return '<section class="card recovery" aria-labelledby="rec-h"><h2 id="rec-h">Update Money to use your data</h2><p>' + h(NEWER_MSG) +
+      " Until then the app is read-only and saves nothing, so your newer data stays exactly as it is.</p>" +
+      '<div class="row">' + btn("Reload", "reload", undefined, "primary") + btn("Download saved data", "newerdownload") + "</div></section>";
     var ks = recKeys();
     if (!readOnly && !ks.length) return "";
     var why = problem ? "Your saved data on this device was damaged: " + problem + ". " : "A copy of damaged saved data is being kept on this device. ";
@@ -140,24 +151,29 @@
       }).join("") + "</ul></section>";
   }
 
+  // #30: in a saving group, each category says whether it counts as debt repaid (renaming doesn't change it)
+  function debtBox(c) {
+    var cat = find(S.categories, c.id); if (!cat) return "";
+    return '<label class="toggle debt"><input type="checkbox" data-bind="debt:' + h(c.id) + '"' + (cat.debt === true ? " checked" : "") + ' aria-label="' + h(c.name) + ' counts as debt repaid"><span>Counts as debt repaid</span></label>';
+  }
   var GT_OPTS = [["spending", "Spending: paid out and in the spending ratio"], ["saving", "Saving or debt: paid out, not spending"], ["outflow", "Other money out: paid out, not spending"], ["transfer", "Transfer between my accounts: not counted"]];
   function budget() {
     var k = selKey(), b = M.budgetStats(S, k);
-    var row = function (c, isTotal) {
+    var row = function (c, isTotal, gtype) {
       if (!isTotal && U.onlyActive && !(c.budget > 0) && !(c.spent > 0)) return "";
       var bid = h("b-" + (c.id || "x"));
       return '<li class="brow' + (isTotal ? " total" : "") + '"><div class="bt"><span class="bn">' + h(c.name) + "</span>" + chip(c.status, c.status === "over" ? " by " + M.qar(c.spent - c.budget) : "") + "</div>" +
         '<div class="bg">' + (isTotal || !c.id ? '<div class="bv"><span>Budget</span><b>' + (c.budget > 0 ? money(c.budget) : D) + "</b></div>"
           : '<label class="bv" for="' + bid + '"><span>Budget</span><input id="' + bid + '" aria-label="' + h(c.name + " budget") + '" inputmode="decimal" autocomplete="off" placeholder="0" value="' + h(S.categories.filter(function (x) { return x.id === c.id; })[0].budget) + '" data-bind="budget:' + h(c.id) + '"></label>') +
         '<div class="bv"><span>Spent</span><b>' + money(c.spent) + '</b></div><div class="bv"><span>Left</span><b class="' + (c.budget > 0 && c.left < 0 ? "neg" : "") + '">' + (c.budget > 0 ? money(c.left) : D) + "</b></div></div>" +
-        meter(c, c.name) + (!isTotal && c.id ? btn("Remove", "delcat", c.id, "link small", ' aria-label="Remove category ' + h(c.name) + '"') : "") + "</li>";
+        meter(c, c.name) + (!isTotal && c.id && gtype === "saving" ? debtBox(c) : "") + (!isTotal && c.id ? btn("Remove", "delcat", c.id, "link small", ' aria-label="Remove category ' + h(c.name) + '"') : "") + "</li>";
     };
     var groupOpts = M.DEFAULT_GROUPS.concat(S.categories.map(function (c) { return c.group; })).filter(function (g, i, a) { return a.indexOf(g) === i; });
     return '<section aria-labelledby="h-budget"><div class="head"><h1 id="h-budget">Budget vs actual</h1>' + monthPicker() + "</div>" +
       '<p class="lead">' + (b.hasBudget ? M.qar(b.budgeted) + " budgeted, " + M.qar(b.paidOut) + " paid out, " + M.qar(Math.abs(b.left)) + (b.left < 0 ? " over." : " left.") : "Type a monthly budget for each category you plan to spend on. Bars turn amber from 85% of budget and red once over.") + "</p>" +
       '<label class="toggle"><input type="checkbox" data-bind="onlyActive"' + (U.onlyActive ? " checked" : "") + "><span>Only show categories with a budget or spending</span></label>" +
       b.groups.map(function (g, i) { return '<h2>' + h(g.group) + '</h2>' + select("gt-" + i, "How " + g.group + " counts", GT_OPTS, g.type, "gtype:" + encodeURIComponent(g.group)) +
-        (g.type === "transfer" ? '<p class="hint">Moving your own money between accounts. Not counted in paid out, budgeted, left over or the spending ratio.</p>' : "") + '<ul class="blist">' + g.cats.map(function (c) { return row(c, false); }).join("") + row(g.total, true) + "</ul>"; }).join("") +
+        (g.type === "transfer" ? '<p class="hint">Moving your own money between accounts. Not counted in paid out, budgeted, left over or the spending ratio.</p>' : "") + '<ul class="blist">' + g.cats.map(function (c) { return row(c, false, g.type); }).join("") + row(g.total, true) + "</ul>"; }).join("") +
       '<h2>Income</h2><p class="hint">Expected income for the month. It is not counted as spending. Paybacks are money owed to you coming back (e.g. a friend repaying a loan). A shop refund isn\u2019t income: add it as a minus amount against the category it refunds.</p><ul class="blist">' + b.income.map(function (c) {
         if (U.onlyActive && !(c.budget > 0) && !(c.spent > 0)) return "";
         var bid = h("b-" + c.id);
@@ -217,7 +233,7 @@
       btn("Add account", "addacc", undefined, "primary") +
       '<h2>Goals</h2>' + (S.goals.length ? '<ul class="items">' + S.goals.map(function (g, gi) {
         var st = M.goalStats(g);
-        var ml = st.monthsLeft === null ? D : st.monthsLeft === 0 ? "Reached" : M.fmt(st.monthsLeft, 1) + " months";
+        var ml = st.unreachable ? "not reachable at this rate (over 100 years)" : st.monthsLeft === null ? D : st.monthsLeft === 0 ? "Reached" : M.fmt(st.monthsLeft, 1) + " months";
         var gn = rowName(S.goals, gi, "Goal");
         return '<li class="item">' + field("gn-" + g.id, "Goal", g.name, { ph: "Goal name", bind: "goal:" + g.id + ":name", aria: "Goal " + (gi + 1) + " name" }) +
           '<div class="row">' + field("gc-" + g.id, "Current", g.current, { money: true, ph: "0", bind: "goal:" + g.id + ":current", aria: gn + " current" }) + field("gt-" + g.id, "Target", g.target, { money: true, ph: "0", bind: "goal:" + g.id + ":target", aria: gn + " target" }) +
@@ -337,7 +353,7 @@
     },
     quickadd: function () {
       var p = quickPreview(); if (!p.ready) return;
-      if (M.groupMap(S)[p.cat] === undefined) S.categories.push({ id: M.uid("c"), group: "Other", name: p.cat, budget: "" });
+      if (M.groupMap(S)[p.cat] === undefined) S.categories.push({ id: M.uid("c"), group: "Other", name: p.cat, budget: "", debt: M.defaultDebt(p.cat) });
       S.transactions.push({ id: M.uid("t"), date: p.date, amount: p.amount, category: p.cat, paidFrom: U.form.paid.trim(), note: p.note });
       U.sel = M.moneyMonth(p.date, sd());
       U.msg = p.amount < 0 ? "Refund of " + money(-p.amount) + " recorded against " + p.cat + "." : "Added " + money(p.amount) + " to " + p.cat + ".";
@@ -351,7 +367,7 @@
     addcat: function () {
       var name = NC.name.trim(); if (!name) { toast("Type a category name first."); return; }
       if (M.groupMap(S)[name] !== undefined) { toast("That category already exists."); return; }
-      S.categories.push({ id: M.uid("c"), group: NC.group, name: name, budget: "" }); NC.name = ""; commit(); toast("Added " + name + ".");
+      S.categories.push({ id: M.uid("c"), group: NC.group, name: name, budget: "", debt: M.defaultDebt(name) }); NC.name = ""; commit(); toast("Added " + name + ".");
     },
     delcat: function (id) {
       var c = find(S.categories, id); if (!c) return;
@@ -384,7 +400,10 @@
       recKeys().forEach(function (k) { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } });
       problem = ""; render(); toast("Damaged copy deleted.");
     },
-    exportjson: function () { download("money-backup-" + today() + ".json", M.toBackup(S), "application/json"); toast("Backup exported."); },
+    reload: function () { location.reload(); },
+    // #28: the saved data itself (newer format) is the backup; it imports into the updated app
+    newerdownload: function () { download("money-backup-" + today() + ".json", rawSaved() || "", "application/json"); toast("Saved data downloaded, unchanged."); },
+    exportjson: function () { if (newer) { ACT.newerdownload(); return; } download("money-backup-" + today() + ".json", M.toBackup(S), "application/json"); toast("Backup exported."); },
     exportcsv: function () { download("money-transactions-" + today() + ".csv", M.txToCSV(S), "text/csv"); toast("Transactions exported."); },
     undoimport: function () {
       var raw = null; try { raw = localStorage.getItem(UNDO_KEY); } catch (e) { /* ignore */ }
@@ -397,13 +416,14 @@
     },
     erase: function () {
       if (!confirm("Erase all money data on this device, including any undo or damaged-data copies? Export a backup first if you might need it.")) return;
-      readOnly = false; problem = ""; wipeOtherKeys(); S = M.defaultState(); U.sel = ""; commit(); toast("All data erased.");
+      readOnly = false; problem = ""; newer = 0; wipeOtherKeys(); S = M.defaultState(); U.sel = ""; commit(); toast("All data erased.");
     }
   };
   function importFile(file) {
     var r = new FileReader();
     r.onload = function () {
       var text = String(r.result || "");
+      if (newer) { toast(NEWER_MSG + " Nothing was imported."); return; }
       try {
         if (/\.json$/i.test(file.name) || /^\s*\{/.test(text)) {
           var rb = M.readBackup(text), c = rb.counts; // throws (and changes nothing) unless it's a supported Money backup
@@ -419,7 +439,7 @@
           var res = M.csvToTx(text, S);
           var neg = res.negatives ? " Skipped " + res.negatives + " negative amount" + (res.negatives === 1 ? "" : "s") + ": in most bank statements a minus means money out, but in Money it means a refund, so enter those by hand." : "";
           if (!res.rows.length) { toast("No transactions found in that CSV" + (res.skipped ? " (" + res.skipped + " rows skipped)." : ".") + neg); return; }
-          res.newCategories.forEach(function (n) { S.categories.push({ id: M.uid("c"), group: "Other", name: n, budget: "" }); });
+          res.newCategories.forEach(function (n) { S.categories.push({ id: M.uid("c"), group: "Other", name: n, budget: "", debt: M.defaultDebt(n) }); });
           S.transactions = S.transactions.concat(res.rows); commit();
           toast("Imported " + res.rows.length + " transactions" + (res.skipped ? ", skipped " + res.skipped : "") + (res.newCategories.length ? ", added " + res.newCategories.length + " new categories under Other" : "") + "." + neg);
         }
@@ -434,6 +454,9 @@
     switch (p[0]) {
       case "gtype": if (isInput) return; var gn = decodeURIComponent(p.slice(1).join(":"));
         if (M.GROUP_TYPES.indexOf(v) >= 0) { S.settings.groupTypes = S.settings.groupTypes || Object.create(null); S.settings.groupTypes[gn] = v; save(); later(); toast(gn + " now counts as: " + GT_OPTS.filter(function (o) { return o[0] === v; })[0][1] + "."); }
+        return;
+      case "debt": if (isInput) return; var dc = find(S.categories, p[1]);
+        if (dc) { dc.debt = !!v; save(); later(); toast(dc.name + (dc.debt ? " now counts as debt repaid." : " now counts as saved, not debt repaid.")); }
         return;
       case "budget": var c = find(S.categories, p[1]); if (c && !isInput) { c.budget = M.has(v) ? String(M.num(v)) : ""; save(); later(); } return;
       case "acc": var a = find(S.accounts, p[1]); if (a) { a[p[2]] = p[2] === "balance" ? (M.has(v) ? String(M.num(v)) : "") : v; if (!isInput || p[2] === "name") { save(); } if (!isInput) later(); } return;
@@ -478,5 +501,5 @@
   if ("serviceWorker" in navigator && location.protocol !== "file:") {
     navigator.serviceWorker.register("sw.js").catch(function () { /* offline install not available */ });
   }
-  window.MoneyApp = { state: function () { return S; }, render: render, U: U, readOnly: function () { return readOnly; } };
+  window.MoneyApp = { state: function () { return S; }, render: render, U: U, readOnly: function () { return readOnly; }, newer: function () { return newer; } };
 })();
